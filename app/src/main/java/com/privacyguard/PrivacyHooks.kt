@@ -29,6 +29,8 @@ object PrivacyHooks {
             hookMediaPathReaders(module)
             hookFileOutputStream(module)
             hookFileListing(module)
+            hookFileVisibility(module)
+            hookNioFilesystem(module)
             module.log(Log.INFO, "PrivacyGuard", "Privacy hooks ready for ${param.packageName}")
         } catch (t: Throwable) {
             module.log(Log.ERROR, "PrivacyGuard", "Install failed for ${param.packageName}: ${t.message}", t)
@@ -301,26 +303,86 @@ object PrivacyHooks {
     }
 
     private fun hookFileListing(module: XposedModule) {
-        val listFiles = File::class.java.getDeclaredMethod("listFiles")
-        module.hook(listFiles).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-            val file = chain.getThisObject() as? File
-            val policy = readPolicy()
-            if (file != null && (policy.blocksPath(file.absolutePath) || policy.blocksMediaPath(file.absolutePath))) return@intercept emptyArray<File>()
-            val result = chain.proceed() as? Array<File>
-            if (result != null && policy.enabled && policy.customPaths.isNotEmpty()) {
-                result.filterNot { policy.blocksPath(it.absolutePath) || policy.blocksMediaPath(it.absolutePath) }.toTypedArray()
-            } else result
-        }
+        // Cover every java.io.File listing overload. Gallery apps often use a
+        // FilenameFilter/FileFilter instead of the no-argument overload.
+        File::class.java.declaredMethods
+            .filter { it.name == "listFiles" || it.name == "list" }
+            .forEach { method ->
+                module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                    val file = chain.getThisObject() as? File
+                    val policy = readPolicy()
+                    if (file != null && (policy.blocksPath(file.absolutePath) || policy.blocksMediaPath(file.absolutePath))) {
+                        return@intercept if (method.name == "listFiles") emptyArray<File>() else emptyArray<String>()
+                    }
+                    val result = chain.proceed()
+                    if (file == null || !policy.enabled) return@intercept result
+                    when (result) {
+                        is Array<*> -> {
+                            if (method.name == "listFiles") {
+                                @Suppress("UNCHECKED_CAST")
+                                (result as Array<File>).filterNot { policy.blocksPath(it.absolutePath) || policy.blocksMediaPath(it.absolutePath) }.toTypedArray()
+                            } else {
+                                @Suppress("UNCHECKED_CAST")
+                                (result as Array<String>).filterNot { child ->
+                                    val childPath = File(file, child).absolutePath
+                                    policy.blocksPath(childPath) || policy.blocksMediaPath(childPath)
+                                }.toTypedArray()
+                            }
+                        }
+                        else -> result
+                    }
+                }
+            }
+    }
 
-        val list = File::class.java.getDeclaredMethod("list")
-        module.hook(list).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-            val file = chain.getThisObject() as? File
-            val policy = readPolicy()
-            if (file != null && (policy.blocksPath(file.absolutePath) || policy.blocksMediaPath(file.absolutePath))) return@intercept emptyArray<String>()
-            val result = chain.proceed() as? Array<String>
-            if (result != null && policy.enabled && policy.customPaths.isNotEmpty()) {
-                result.filterNot { child -> file != null && policy.blocksPath(File(file, child).absolutePath) || policy.blocksMediaPath(File(file, child).absolutePath) }.toTypedArray()
-            } else result
+    /**
+     * Some galleries enumerate shared storage and then call File.exists()/isFile()
+     * before opening each item. Returning false for protected media prevents that
+     * fallback path from repopulating the gallery after a MediaStore refresh.
+     */
+    private fun hookFileVisibility(module: XposedModule) {
+        val names = setOf("exists", "isFile", "isDirectory", "canRead")
+        File::class.java.declaredMethods
+            .filter { it.name in names && it.parameterTypes.isEmpty() && it.returnType == Boolean::class.javaPrimitiveType }
+            .forEach { method ->
+                module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                    val file = chain.getThisObject() as? File
+                    val policy = readPolicy()
+                    if (file != null && (policy.blocksPath(file.absolutePath) || policy.blocksMediaPath(file.absolutePath))) {
+                        return@intercept false
+                    }
+                    chain.proceed()
+                }
+            }
+    }
+
+    /** Java NIO is another filesystem fallback used by some modern gallery stacks. */
+    private fun hookNioFilesystem(module: XposedModule) {
+        runCatching {
+            val filesClass = java.nio.file.Files::class.java
+            filesClass.declaredMethods
+                .filter { it.name in setOf("exists", "isRegularFile", "isDirectory") && it.parameterTypes.isNotEmpty() && it.parameterTypes[0] == java.nio.file.Path::class.java }
+                .forEach { method ->
+                    module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                        val path = chain.getArg(0) as? java.nio.file.Path
+                        val policy = readPolicy()
+                        if (path != null && (policy.blocksPath(path.toString()) || policy.blocksMediaPath(path.toString()))) return@intercept false
+                        chain.proceed()
+                    }
+                }
+
+            filesClass.declaredMethods
+                .filter { it.name == "list" && it.parameterTypes.size >= 1 && it.parameterTypes[0] == java.nio.file.Path::class.java }
+                .forEach { method ->
+                    module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                        val path = chain.getArg(0) as? java.nio.file.Path
+                        val policy = readPolicy()
+                        if (path != null && (policy.blocksPath(path.toString()) || policy.blocksMediaPath(path.toString()))) {
+                            return@intercept java.util.stream.Stream.empty<java.nio.file.Path>()
+                        }
+                        chain.proceed()
+                    }
+                }
         }
     }
 
