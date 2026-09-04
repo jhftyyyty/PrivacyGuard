@@ -3,11 +3,16 @@ package com.privacyguard
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -23,8 +28,13 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -88,6 +98,25 @@ private object ProfileStore {
         PrivacyRule.values().forEach { e.remove("$id.${it.name}") }
         e.apply()
     }
+}
+
+
+private fun treeUriToPath(uri: Uri): String? {
+    val docId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull() ?: return null
+    val parts = docId.split(":", limit = 2)
+    if (parts.size != 2) return null
+    val volume = parts[0]
+    val relative = parts[1].trim('/').replace("/", "/")
+    return if (volume.equals("primary", ignoreCase = true)) {
+        if (relative.isEmpty()) "/storage/emulated/0" else "/storage/emulated/0/$relative"
+    } else {
+        if (relative.isEmpty()) "/storage/$volume" else "/storage/$volume/$relative"
+    }
+}
+
+private fun addPath(paths: List<String>, raw: String): List<String> {
+    val clean = raw.trim().trimEnd('/')
+    return if (clean.isNotEmpty() && clean !in paths) paths + clean else paths
 }
 
 @Composable
@@ -246,6 +275,11 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, "بحث") },
+                trailingIcon = {
+                    if (search.isNotEmpty()) {
+                        IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "مسح البحث") }
+                    }
+                },
                 placeholder = { Text("ابحث باسم التطبيق أو اسم الحزمة") },
                 shape = RoundedCornerShape(14.dp)
             )
@@ -392,6 +426,13 @@ private fun ProfileEditorScreen(
     var paths by remember(profileId) { mutableStateOf(initial.paths) }
     var newPath by remember { mutableStateOf("") }
     var showDelete by remember { mutableStateOf(false) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        treeUriToPath(uri)?.let { path -> paths = addPath(paths, path) }
+    }
 
     fun save() {
         val clean = name.trim().ifEmpty { initial.name }
@@ -433,19 +474,30 @@ private fun ProfileEditorScreen(
                 )
             }
             item {
-                Text("المجلدات المحجوبة", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
-                paths.forEach { path ->
-                    ListItem(headlineContent = { Text(path, maxLines = 2) }, trailingContent = {
-                        TextButton(onClick = { paths = paths.filterNot { it == path } }) { Text("حذف") }
-                    })
-                }
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(newPath, { newPath = it }, Modifier.weight(1f), singleLine = true, label = { Text("مسار مجلد") })
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = {
-                        val clean = newPath.trim().trimEnd('/')
-                        if (clean.isNotEmpty() && clean !in paths) { paths = paths + clean; newPath = "" }
-                    }) { Text("إضافة") }
+                val filesEnabled = PrivacyRule.FILES in rules
+                Text("الملفات والمجلدات", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                AnimatedVisibility(visible = filesEnabled, enter = fadeIn(), exit = fadeOut()) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text("المجلدات المحجوبة", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        paths.forEach { path ->
+                            ListItem(headlineContent = { Text(path, maxLines = 2) }, trailingContent = {
+                                TextButton(onClick = { paths = paths.filterNot { it == path } }) { Text("حذف") }
+                            })
+                        }
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(newPath, { newPath = it }, Modifier.weight(1f), singleLine = true, label = { Text("مسار مجلد") })
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = {
+                                val updated = addPath(paths, newPath)
+                                if (updated != paths) { paths = updated; newPath = "" }
+                            }) { Text("إضافة") }
+                        }
+                        OutlinedButton(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                            Icon(Icons.Default.FolderOpen, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("اختيار مجلد من تطبيق الملفات")
+                        }
+                    }
                 }
                 Button(onClick = { save() }, modifier = Modifier.fillMaxWidth().padding(16.dp)) { Text("حفظ البروفايل") }
             }
@@ -476,10 +528,15 @@ private fun ProfileAppPicker(
     onBack: () -> Unit
 ) {
     val selected = remember(profile.id) { mutableStateListOf<String>().also { it.addAll(profile.assignedApps) } }
+    var showSystemApps by remember(profile.id) { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
     val query = search.trim().lowercase()
-    val shown = apps.filter { query.isEmpty() || it.label.lowercase().contains(query) || it.packageName.lowercase().contains(query) }
+    val shown = apps.asSequence()
+        .filter { !it.isSystem || showSystemApps || it.packageName in selected }
+        .filter { query.isEmpty() || it.label.lowercase().contains(query) || it.packageName.lowercase().contains(query) }
         .sortedWith(compareByDescending<AppItem> { it.packageName in selected }.thenBy { it.label.lowercase() })
+        .toList()
 
     fun toggle(pkg: String, value: Boolean) {
         if (value) { if (pkg !in selected) selected.add(pkg) } else selected.remove(pkg)
@@ -487,20 +544,31 @@ private fun ProfileAppPicker(
 
     Scaffold(topBar = {
         TopAppBar(
-            title = { Text("تطبيق البروفايل") },
+            title = { Text(profile.name) },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "رجوع") } },
-            actions = { Text("${selected.size}", modifier = Modifier.padding(horizontal = 12.dp)) }
+            actions = {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "المزيد") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (showSystemApps) "إخفاء تطبيقات النظام" else "إظهار تطبيقات النظام") },
+                        onClick = { showSystemApps = !showSystemApps; menu = false }
+                    )
+                    DropdownMenuItem(text = { Text("تحديد الظاهر") }, onClick = { shown.forEach { toggle(it.packageName, true) }; menu = false })
+                    DropdownMenuItem(text = { Text("إلغاء الظاهر") }, onClick = { shown.forEach { toggle(it.packageName, false) }; menu = false })
+                }
+            }
         )
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             Text("${selected.size} تطبيقات مفعّل عليها البروفايل", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-            OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), singleLine = true, leadingIcon = { Icon(Icons.Default.Search, "بحث") }, placeholder = { Text("ابحث باسم التطبيق أو اسم الحزمة") })
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { shown.forEach { toggle(it.packageName, true) } }) { Text("تحديد الظاهر") }
-                TextButton(onClick = { shown.forEach { toggle(it.packageName, false) } }) { Text("إلغاء الظاهر") }
-            }
+            OutlinedTextField(
+                search, { search = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, "بحث") },
+                trailingIcon = { if (search.isNotEmpty()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "مسح البحث") } },
+                placeholder = { Text("ابحث باسم التطبيق أو اسم الحزمة") }, shape = RoundedCornerShape(14.dp)
+            )
             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                items(shown, key = { it.packageName }) { app ->
+                items(shown, key = { it.packageName }, contentType = { "profile_app" }) { app ->
                     val checked = app.packageName in selected
                     ListItem(
                         modifier = Modifier.clickable { toggle(app.packageName, !checked) },
@@ -523,22 +591,17 @@ private fun ProfileAppPicker(
                     val assigned = selected.toSet()
                     val oldAssigned = profile.assignedApps
                     val e = policyPrefs.edit()
-                    selected.distinct().forEach { pkg ->
+                    assigned.forEach { pkg ->
                         e.putBoolean("$pkg.enabled", true)
                         PrivacyRule.values().forEach { rule -> e.putBoolean("$pkg.${rule.name}", rule in profile.rules) }
                         e.putStringSet("$pkg.custom_paths", profile.paths.toSet())
                         enabledMap[pkg] = true
                     }
-                    (oldAssigned - assigned).forEach { pkg ->
-                        // Removing an app from the profile also disables its protection if this profile owned it.
-                        e.putBoolean("$pkg.enabled", false)
-                        enabledMap[pkg] = false
-                    }
+                    (oldAssigned - assigned).forEach { pkg -> e.putBoolean("$pkg.enabled", false); enabledMap[pkg] = false }
                     e.apply()
                     ProfileStore.save(profilePrefs, profile.copy(assignedApps = assigned))
                     onBack()
-                },
-                modifier = Modifier.fillMaxWidth().padding(16.dp)
+                }, modifier = Modifier.fillMaxWidth().padding(16.dp)
             ) { Text("حفظ وتطبيق على ${selected.size} تطبيق") }
         }
     }
@@ -555,6 +618,18 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
     var rules by remember(packageName) { mutableStateOf(PrivacyRule.values().associateWith { prefs.getBoolean("$packageName.${it.name}", false) }) }
     var paths by remember(packageName) { mutableStateOf(prefs.getStringSet("$packageName.custom_paths", emptySet())?.toList() ?: emptyList()) }
     var newPath by remember { mutableStateOf("") }
+    var filesExpanded by remember(packageName) { mutableStateOf(rules[PrivacyRule.FILES] == true) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val path = treeUriToPath(uri)
+        if (path != null) {
+            paths = addPath(paths, path)
+            prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply()
+        }
+    }
 
     Scaffold(topBar = { TopAppBar(title = { Text("إعدادات $appName") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "رجوع") } }) }) { padding ->
         LazyColumn(Modifier.padding(padding).fillMaxSize()) {
@@ -562,12 +637,7 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
                 ListItem(
                     headlineContent = { Text("تفعيل حماية هذا التطبيق") },
                     supportingContent = { Text(if (protectionEnabled) "الحماية مفعّلة" else "الحماية غير مفعّلة") },
-                    trailingContent = {
-                        Switch(checked = protectionEnabled, onCheckedChange = {
-                            protectionEnabled = it
-                            prefs.edit().putBoolean("$packageName.enabled", it).apply()
-                        })
-                    }
+                    trailingContent = { Switch(checked = protectionEnabled, onCheckedChange = { protectionEnabled = it; prefs.edit().putBoolean("$packageName.enabled", it).apply() }) }
                 )
                 HorizontalDivider()
                 Text("ما الذي تريد حجبه؟", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
@@ -577,37 +647,40 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
                 ListItem(
                     headlineContent = { Text(rule.title) },
                     supportingContent = { Text(if (checked) "محجوب" else "مسموح") },
-                    trailingContent = {
-                        Switch(checked = checked, onCheckedChange = { value ->
-                            rules = rules.toMutableMap().apply { put(rule, value) }
-                            prefs.edit().putBoolean("$packageName.${rule.name}", value).apply()
-                        })
-                    }
+                    trailingContent = { Switch(checked = checked, onCheckedChange = { value ->
+                        rules = rules.toMutableMap().apply { put(rule, value) }
+                        prefs.edit().putBoolean("$packageName.${rule.name}", value).apply()
+                        if (rule == PrivacyRule.FILES) filesExpanded = value
+                    }) }
                 )
-            }
-            item {
-                Text("المجلدات المحجوبة", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
-                paths.forEach { path ->
-                    ListItem(headlineContent = { Text(path, maxLines = 2) }, trailingContent = {
-                        TextButton(onClick = {
-                            paths = paths.filterNot { it == path }
-                            prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply()
-                        }) { Text("حذف") }
-                    })
-                }
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(newPath, { newPath = it }, Modifier.weight(1f), singleLine = true, label = { Text("مسار المجلد") }, placeholder = { Text("/storage/emulated/0/DCIM") })
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = {
-                        val clean = newPath.trim().trimEnd('/')
-                        if (clean.isNotEmpty() && clean !in paths) {
-                            paths = paths + clean
-                            prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply()
-                            newPath = ""
+                if (rule == PrivacyRule.FILES) {
+                    AnimatedVisibility(visible = filesExpanded, enter = fadeIn(), exit = fadeOut()) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                            Text("المجلدات المحجوبة", style = MaterialTheme.typography.titleSmall)
+                            paths.forEach { path ->
+                                ListItem(
+                                    headlineContent = { Text(path, maxLines = 2) },
+                                    trailingContent = { TextButton(onClick = {
+                                        paths = paths.filterNot { it == path }
+                                        prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply()
+                                    }) { Text("حذف") } }
+                                )
+                            }
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(newPath, { newPath = it }, Modifier.weight(1f), singleLine = true, label = { Text("مسار المجلد") }, placeholder = { Text("/storage/emulated/0/DCIM") })
+                                Spacer(Modifier.width(8.dp))
+                                Button(onClick = { paths = addPath(paths, newPath); newPath = ""; prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply() }) { Text("إضافة") }
+                            }
+                            OutlinedButton(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.FolderOpen, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("اختيار مجلد من تطبيق الملفات")
+                            }
                         }
-                    }) { Text("إضافة") }
+                    }
                 }
             }
         }
     }
 }
+
