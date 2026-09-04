@@ -277,7 +277,7 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
                         protectionEnabled = it
                         prefs.edit().putBoolean("$packageName.enabled", it).apply()
                         (context as? MainActivity)?.notifyProtection(packageName, it)
-                    }
+                    })
                 })
                 HorizontalDivider()
                 Text("ما الذي تريد حجبه عن هذا التطبيق؟", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
@@ -285,10 +285,13 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
             items(PrivacyRule.values().toList()) { rule ->
                 val checked = rules[rule] == true
                 ListItem(headlineContent = { Text(rule.title) }, supportingContent = { Text(if (checked) "محجوب" else "مسموح") }, trailingContent = {
-                    Switch(checked) {
-                        rules = rules.toMutableMap().apply { put(rule, it) }
-                        prefs.edit().putBoolean("$packageName.${rule.name}", it).apply()
-                    }
+                    Switch(
+                        checked = checked,
+                        onCheckedChange = { value ->
+                            rules = rules.toMutableMap().apply { put(rule, value) }
+                            prefs.edit().putBoolean("$packageName.${rule.name}", value).apply()
+                        }
+                    )
                 })
             }
             item {
