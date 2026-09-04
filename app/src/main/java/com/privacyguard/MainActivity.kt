@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.animation.AnimatedVisibility
@@ -493,7 +492,7 @@ private fun ProfileEditorScreen(
                             }) { Text("إضافة") }
                         }
                         OutlinedButton(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                            Icon(Icons.Default.Folder, null)
+                            Text("📁")
                             Spacer(Modifier.width(8.dp))
                             Text("اختيار مجلد من تطبيق الملفات")
                         }
@@ -672,7 +671,7 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
                                 Button(onClick = { paths = addPath(paths, newPath); newPath = ""; prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply() }) { Text("إضافة") }
                             }
                             OutlinedButton(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth()) {
-                                Icon(Icons.Default.Folder, null)
+                                Text("📁")
                                 Spacer(Modifier.width(8.dp))
                                 Text("اختيار مجلد من تطبيق الملفات")
                             }
