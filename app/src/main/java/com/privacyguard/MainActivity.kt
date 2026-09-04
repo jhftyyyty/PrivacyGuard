@@ -29,8 +29,6 @@ import android.widget.ImageView
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 
 enum class ThemeChoice { AUTO, LIGHT, AMOLED }
-enum class AppFilter { ALL, USER, SYSTEM }
-
 enum class PrivacyRule(val title: String) {
     CONTACTS("جهات الاتصال"),
     CALL_LOGS("سجل المكالمات"),
@@ -48,8 +46,8 @@ fun PrivacyTheme(choice: ThemeChoice, content: @Composable () -> Unit) {
         ThemeChoice.AMOLED -> true
     }
     val scheme = if (dark) darkColorScheme(
-        background = if (choice == ThemeChoice.AMOLED) Color.Black else Color(0xFF121212),
-        surface = if (choice == ThemeChoice.AMOLED) Color.Black else Color(0xFF121212)
+        background = if (choice == ThemeChoice.AMOLED || choice == ThemeChoice.AUTO) Color.Black else Color(0xFF121212),
+        surface = if (choice == ThemeChoice.AMOLED || choice == ThemeChoice.AUTO) Color.Black else Color(0xFF121212)
     ) else lightColorScheme()
     MaterialTheme(colorScheme = scheme, content = content)
 }
@@ -89,10 +87,8 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
             .sortedBy { pm.getApplicationLabel(it).toString().lowercase() }
     }
     val prefs = remember { context.getSharedPreferences("privacy_guard", Context.MODE_PRIVATE) }
-    var filter by remember {
-        mutableStateOf(runCatching {
-            AppFilter.valueOf(prefs.getString("filter", "ALL") ?: "ALL")
-        }.getOrDefault(AppFilter.ALL))
+    var showSystemApps by remember {
+        mutableStateOf(prefs.getBoolean("show_system_apps", false))
     }
     var menu by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
@@ -131,26 +127,10 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
                         }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                             DropdownMenuItem(
-                                text = { Text("إظهار كل التطبيقات") },
+                                text = { Text(if (showSystemApps) "إخفاء تطبيقات النظام" else "إظهار تطبيقات النظام") },
                                 onClick = {
-                                    filter = AppFilter.ALL
-                                    prefs.edit().putString("filter", "ALL").apply()
-                                    menu = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("إظهار التطبيقات العادية فقط") },
-                                onClick = {
-                                    filter = AppFilter.USER
-                                    prefs.edit().putString("filter", "USER").apply()
-                                    menu = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("إظهار تطبيقات النظام فقط") },
-                                onClick = {
-                                    filter = AppFilter.SYSTEM
-                                    prefs.edit().putString("filter", "SYSTEM").apply()
+                                    showSystemApps = !showSystemApps
+                                    prefs.edit().putBoolean("show_system_apps", showSystemApps).apply()
                                     menu = false
                                 }
                             )
@@ -183,13 +163,11 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
                 val shown = apps.filter { app ->
                     val isSystem = app.flags and ApplicationInfo.FLAG_SYSTEM != 0
                     val isUpdatedSystem = app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
-                    val filterMatches = when (filter) {
-                        AppFilter.ALL -> true
-                        AppFilter.USER -> !isSystem || isUpdatedSystem
-                        AppFilter.SYSTEM -> isSystem && !isUpdatedSystem
-                    }
+                    // Third-party/user apps are the default list. Updated system apps remain system apps here.
+                    val isThirdParty = !isSystem && !isUpdatedSystem
                     val name = pm.getApplicationLabel(app).toString()
-                    filterMatches && (query.isEmpty() || name.lowercase().contains(query) || app.packageName.lowercase().contains(query))
+                    (isThirdParty || showSystemApps) &&
+                        (query.isEmpty() || name.lowercase().contains(query) || app.packageName.lowercase().contains(query))
                 }
 
                 if (shown.isEmpty()) {
