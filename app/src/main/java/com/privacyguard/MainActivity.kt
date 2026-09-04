@@ -192,9 +192,18 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
         }
     }
 
+    BackHandler(enabled = screen == Screen.APPS && selectedPackage == null && search.isNotEmpty()) {
+        search = ""
+    }
+
     if (selectedPackage != null) {
         BackHandler { selectedPackage = null; screen = Screen.APPS }
-        AppPolicyScreen(selectedPackage!!, pm, onBack = { selectedPackage = null; screen = Screen.APPS })
+        AppPolicyScreen(
+            packageName = selectedPackage!!,
+            pm = pm,
+            onProtectionChanged = { enabledMap[selectedPackage!!] = it },
+            onBack = { selectedPackage = null; screen = Screen.APPS }
+        )
         return
     }
     if (screen == Screen.PROFILE_EDIT && selectedProfile != null) {
@@ -608,7 +617,12 @@ private fun ProfileAppPicker(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () -> Unit) {
+private fun AppPolicyScreen(
+    packageName: String,
+    pm: PackageManager,
+    onProtectionChanged: (Boolean) -> Unit,
+    onBack: () -> Unit
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     val appInfo = remember(packageName) { runCatching { pm.getApplicationInfo(packageName, 0) }.getOrNull() }
@@ -636,7 +650,13 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
                 ListItem(
                     headlineContent = { Text("تفعيل حماية هذا التطبيق") },
                     supportingContent = { Text(if (protectionEnabled) "الحماية مفعّلة" else "الحماية غير مفعّلة") },
-                    trailingContent = { Switch(checked = protectionEnabled, onCheckedChange = { protectionEnabled = it; prefs.edit().putBoolean("$packageName.enabled", it).apply() }) }
+                    trailingContent = {
+                        Switch(checked = protectionEnabled, onCheckedChange = { enabled ->
+                            protectionEnabled = enabled
+                            prefs.edit().putBoolean("$packageName.enabled", enabled).apply()
+                            onProtectionChanged(enabled)
+                        })
+                    }
                 )
                 HorizontalDivider()
                 Text("ما الذي تريد حجبه؟", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))

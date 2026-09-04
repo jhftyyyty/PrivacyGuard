@@ -4,8 +4,6 @@ import android.app.Application
 import android.content.ContentResolver
 import android.database.MatrixCursor
 import android.net.Uri
-import android.os.Bundle
-import android.os.ParcelFileDescriptor
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
@@ -19,9 +17,8 @@ object PrivacyHooks {
     fun install(module: XposedModule, param: XposedModuleInterface.PackageLoadedParam) {
         if (param.packageName == "com.privacyguard" || param.packageName == "android" || param.packageName.startsWith("com.android.providers.")) return
         try {
-            hookQuery(module, param)
-            hookOpenInputStream(module)
-            hookOpenFileDescriptor(module)
+            hookQueries(module)
+            hookContentOpens(module)
             hookFileInputStream(module)
             hookFileOutputStream(module)
             hookFileListing(module)
@@ -31,48 +28,78 @@ object PrivacyHooks {
         }
     }
 
-    private fun hookQuery(module: XposedModule, param: XposedModuleInterface.PackageLoadedParam) {
-        val method = ContentResolver::class.java.getDeclaredMethod(
-            "query", Uri::class.java, Array<String>::class.java, String::class.java,
-            Array<String>::class.java, String::class.java
+    /**
+     * Android has multiple ContentResolver.query overloads. Modern gallery/photo
+     * apps commonly use the Bundle/CancellationSignal overload, so both forms
+     * must be covered.
+     */
+    private fun hookQueries(module: XposedModule) {
+        ContentResolver::class.java.declaredMethods
+            .filter { method ->
+                method.name == "query" &&
+                    method.parameterTypes.isNotEmpty() &&
+                    method.parameterTypes[0] == Uri::class.java
+            }
+            .forEach { method ->
+                module.hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val policy = readPolicy()
+                        val uri = chain.getArg(0) as? Uri
+                        val rule = ruleForUri(uri)
+                        if (!policy.blocks(rule)) return@intercept chain.proceed()
+
+                        // query(...): return an empty cursor with the caller's
+                        // requested projection so normal consumers do not crash.
+                        val projection = chain.getArg(1) as? Array<*>
+                        val columns = projection?.mapNotNull { it as? String }?.toTypedArray() ?: emptyArray()
+                        MatrixCursor(columns, 0)
+                    }
+            }
+    }
+
+    /**
+     * Cover all ContentResolver read-open APIs used by MediaStore, SAF and
+     * Google Photos/Gallery implementations. Blocking the URI before it reaches
+     * the provider prevents the media bytes from being exposed.
+     */
+    private fun hookContentOpens(module: XposedModule) {
+        val names = setOf(
+            "openInputStream",
+            "openFileDescriptor",
+            "openAssetFileDescriptor",
+            "openTypedAssetFileDescriptor",
+            "openFile"
         )
-        module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-            val policy = readPolicy()
-            val uri = chain.getArg(0) as? Uri
-            if (!policy.blocks(ruleForUri(uri))) return@intercept chain.proceed()
-            val projection = chain.getArg(1) as? Array<*>
-            val columns = projection?.mapNotNull { it as? String }?.toTypedArray() ?: emptyArray()
-            MatrixCursor(columns, 0)
-        }
-    }
 
-    private fun hookOpenInputStream(module: XposedModule) {
-        val method = ContentResolver::class.java.getDeclaredMethod("openInputStream", Uri::class.java)
-        module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-            val policy = readPolicy()
-            val uri = chain.getArg(0) as? Uri
-            if (policy.blocks(ruleForUri(uri)) || (policy.enabled && policy.customPaths.isNotEmpty() && ruleForUri(uri) == PrivacyRule.FILES)) {
-                throw FileNotFoundException("Privacy Guard blocked content")
+        ContentResolver::class.java.declaredMethods
+            .filter { method ->
+                method.name in names &&
+                    method.parameterTypes.isNotEmpty() &&
+                    method.parameterTypes[0] == Uri::class.java
             }
-            chain.proceed()
-        }
-    }
-
-    private fun hookOpenFileDescriptor(module: XposedModule) {
-        val method = ContentResolver::class.java.getDeclaredMethod("openFileDescriptor", Uri::class.java, String::class.java, android.os.CancellationSignal::class.java)
-        module.hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-            val policy = readPolicy()
-            val uri = chain.getArg(0) as? Uri
-            if (policy.blocks(ruleForUri(uri)) || (policy.enabled && policy.blocks(PrivacyRule.FILES))) {
-                throw FileNotFoundException("Privacy Guard blocked file descriptor")
+            .forEach { method ->
+                module.hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val policy = readPolicy()
+                        val uri = chain.getArg(0) as? Uri
+                        val rule = ruleForUri(uri)
+                        val blocked = policy.blocks(rule) ||
+                            (policy.enabled && policy.rules.contains(PrivacyRule.FILES) && policy.uriLooksLikeCustomFile(uri))
+                        if (blocked) {
+                            throw FileNotFoundException("Privacy Guard blocked content")
+                        }
+                        chain.proceed()
+                    }
             }
-            chain.proceed()
-        }
     }
 
     private fun hookFileInputStream(module: XposedModule) {
-        val cls = java.io.FileInputStream::class.java
-        listOf(cls.getDeclaredConstructor(File::class.java), cls.getDeclaredConstructor(String::class.java)).forEach { constructor ->
+        listOf(
+            java.io.FileInputStream::class.java.getDeclaredConstructor(File::class.java),
+            java.io.FileInputStream::class.java.getDeclaredConstructor(String::class.java)
+        ).forEach { constructor ->
             module.hook(constructor).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
                 val path = when (val arg = chain.getArg(0)) {
                     is File -> arg.absolutePath
@@ -86,8 +113,10 @@ object PrivacyHooks {
     }
 
     private fun hookFileOutputStream(module: XposedModule) {
-        val cls = java.io.FileOutputStream::class.java
-        listOf(cls.getDeclaredConstructor(File::class.java), cls.getDeclaredConstructor(String::class.java)).forEach { constructor ->
+        listOf(
+            java.io.FileOutputStream::class.java.getDeclaredConstructor(File::class.java),
+            java.io.FileOutputStream::class.java.getDeclaredConstructor(String::class.java)
+        ).forEach { constructor ->
             module.hook(constructor).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
                 val path = when (val arg = chain.getArg(0)) {
                     is File -> arg.absolutePath
@@ -119,17 +148,33 @@ object PrivacyHooks {
             if (file != null && policy.blocksPath(file.absolutePath)) return@intercept emptyArray<String>()
             val result = chain.proceed() as? Array<String>
             if (result != null && policy.enabled && policy.customPaths.isNotEmpty()) {
-                result.filterNot { child -> policy.blocksPath(File(file, child).absolutePath) }.toTypedArray()
+                result.filterNot { child -> file != null && policy.blocksPath(File(file, child).absolutePath) }.toTypedArray()
             } else result
         }
     }
 
-    private data class Policy(val enabled: Boolean, val rules: Set<PrivacyRule>, val customPaths: Set<String>) {
+    private data class Policy(
+        val enabled: Boolean,
+        val rules: Set<PrivacyRule>,
+        val customPaths: Set<String>
+    ) {
         fun blocks(rule: PrivacyRule?): Boolean = enabled && rule != null && rules.contains(rule)
-        fun blocksPath(path: String): Boolean = enabled && rules.contains(PrivacyRule.FILES) && customPaths.any { root ->
-            val normalized = normalize(path)
-            val r = normalize(root)
-            normalized == r || normalized.startsWith(if (r.endsWith('/')) r else "$r/")
+
+        fun blocksPath(path: String): Boolean =
+            enabled && rules.contains(PrivacyRule.FILES) && customPaths.any { root ->
+                val normalized = normalize(path)
+                val r = normalize(root)
+                normalized == r || normalized.startsWith("$r/")
+            }
+
+        /** SAF document URIs can identify a custom primary-storage path. */
+        fun uriLooksLikeCustomFile(uri: Uri?): Boolean {
+            if (!enabled || !rules.contains(PrivacyRule.FILES) || uri == null || customPaths.isEmpty()) return false
+            val text = uri.toString()
+            return customPaths.any { root ->
+                val name = root.substringAfterLast('/').takeIf { it.isNotEmpty() } ?: return@any false
+                text.contains(name, ignoreCase = true)
+            }
         }
     }
 
@@ -157,7 +202,13 @@ object PrivacyHooks {
 private fun ruleForUri(uri: Uri?): PrivacyRule? = when (uri?.authority?.lowercase()) {
     "com.android.contacts", "contacts" -> PrivacyRule.CONTACTS
     "call_log", "com.android.calllog" -> PrivacyRule.CALL_LOGS
-    "sms", "mms", "mms-sms", "telephony" -> if (uri.authority?.lowercase() == "mms") PrivacyRule.MMS else PrivacyRule.SMS
-    "media", "com.android.providers.media.documents" -> PrivacyRule.MEDIA
+    "sms" -> PrivacyRule.SMS
+    "mms", "mms-sms" -> PrivacyRule.MMS
+    "telephony" -> PrivacyRule.SMS
+    "media",
+    "com.android.providers.media.documents",
+    "com.google.android.apps.photos.contentprovider",
+    "com.miui.gallery.provider" -> PrivacyRule.MEDIA
     else -> null
 }
+
