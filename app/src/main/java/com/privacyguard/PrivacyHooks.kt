@@ -2,6 +2,7 @@ package com.privacyguard
 
 import android.app.Application
 import android.content.ContentResolver
+import android.content.ContentProviderClient
 import android.database.MatrixCursor
 import android.net.Uri
 import android.util.Log
@@ -19,6 +20,7 @@ object PrivacyHooks {
         if (param.packageName == "com.privacyguard" || param.packageName == "android" || param.packageName.startsWith("com.android.providers.")) return
         try {
             hookQueries(module)
+            hookContentProviderClient(module)
             hookContentOpens(module)
             hookMediaThumbnails(module)
             hookFileInputStream(module)
@@ -59,6 +61,38 @@ object PrivacyHooks {
                         val projection = chain.getArg(1) as? Array<*>
                         val columns = projection?.mapNotNull { it as? String }?.toTypedArray() ?: emptyArray()
                         MatrixCursor(columns, 0)
+                    }
+            }
+    }
+
+    /**
+     * Some gallery implementations acquire a ContentProviderClient and then
+     * talk to the provider directly, bypassing ContentResolver.query/open*.
+     * Hook those entry points as well.
+     */
+    private fun hookContentProviderClient(module: XposedModule) {
+        ContentProviderClient::class.java.declaredMethods
+            .filter { method ->
+                method.name in setOf("query", "openFile", "openAssetFile", "openTypedAssetFile") &&
+                    method.parameterTypes.isNotEmpty() &&
+                    method.parameterTypes[0] == Uri::class.java
+            }
+            .forEach { method ->
+                module.hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val policy = readPolicy()
+                        val uri = chain.getArg(0) as? Uri
+                        val rule = ruleForUri(uri)
+                        if (!policy.blocks(rule)) return@intercept chain.proceed()
+
+                        if (method.name == "query") {
+                            val projection = chain.getArg(1) as? Array<*>
+                            val columns = projection?.mapNotNull { it as? String }?.toTypedArray() ?: emptyArray()
+                            MatrixCursor(columns, 0)
+                        } else {
+                            throw FileNotFoundException("Privacy Guard blocked content provider access")
+                        }
                     }
             }
     }
