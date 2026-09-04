@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -22,9 +23,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.viewinterop.AndroidView
+import android.widget.ImageView
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 
 enum class ThemeChoice { AUTO, LIGHT, AMOLED }
@@ -99,12 +100,17 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
     var globalSettings by remember { mutableStateOf(false) }
 
     if (selectedPackage != null) {
+        BackHandler { selectedPackage = null }
         AppPolicyScreen(
             packageName = selectedPackage!!,
             pm = pm,
             onBack = { selectedPackage = null }
         )
         return
+    }
+
+    if (globalSettings) {
+        BackHandler { globalSettings = false }
     }
 
     Scaffold(
@@ -176,10 +182,11 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
                 val query = search.trim().lowercase()
                 val shown = apps.filter { app ->
                     val isSystem = app.flags and ApplicationInfo.FLAG_SYSTEM != 0
+                    val isUpdatedSystem = app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
                     val filterMatches = when (filter) {
                         AppFilter.ALL -> true
-                        AppFilter.USER -> !isSystem
-                        AppFilter.SYSTEM -> isSystem
+                        AppFilter.USER -> !isSystem || isUpdatedSystem
+                        AppFilter.SYSTEM -> isSystem && !isUpdatedSystem
                     }
                     val name = pm.getApplicationLabel(app).toString()
                     filterMatches && (query.isEmpty() || name.lowercase().contains(query) || app.packageName.lowercase().contains(query))
@@ -203,22 +210,28 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
 
 @Composable
 private fun AppRow(app: ApplicationInfo, pm: PackageManager, onClick: () -> Unit) {
-    val icon = remember(app.packageName) {
-        runCatching { pm.getApplicationIcon(app).toBitmap(56, 56).asImageBitmap() }.getOrNull()
-    }
     ListItem(
         modifier = Modifier.clickable(onClick = onClick),
         leadingContent = {
-            if (icon != null) {
-                Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(48.dp))
-            } else {
-                Surface(Modifier.size(48.dp), shape = RoundedCornerShape(12.dp)) {}
-            }
+            AndroidView(
+                factory = { context ->
+                    ImageView(context).apply {
+                        scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    }
+                },
+                update = { view ->
+                    runCatching { view.setImageDrawable(pm.getApplicationIcon(app)) }
+                        .onFailure { view.setImageDrawable(null) }
+                },
+                modifier = Modifier.size(48.dp)
+            )
         },
         headlineContent = { Text(pm.getApplicationLabel(app).toString()) },
         supportingContent = { Text(app.packageName) },
         trailingContent = {
-            if (app.flags and ApplicationInfo.FLAG_SYSTEM != 0) {
+            val system = app.flags and ApplicationInfo.FLAG_SYSTEM != 0
+            val updated = app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
+            if (system && !updated) {
                 AssistChip(onClick = {}, label = { Text("نظام") })
             }
         }
@@ -251,8 +264,8 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
     val prefs = remember { context.getSharedPreferences("privacy_policies", Context.MODE_PRIVATE) }
     val appInfo = remember(packageName) { runCatching { pm.getApplicationInfo(packageName, 0) }.getOrNull() }
     val appName = remember(packageName) { appInfo?.let { pm.getApplicationLabel(it).toString() } ?: packageName }
-    val icon = remember(packageName) {
-        appInfo?.let { runCatching { pm.getApplicationIcon(it).toBitmap(72, 72).asImageBitmap() }.getOrNull() }
+    var protectionEnabled by remember(packageName) {
+        mutableStateOf(prefs.getBoolean("$packageName.enabled", false))
     }
     var rules by remember(packageName) {
         mutableStateOf(PrivacyRule.values().associateWith { rule -> prefs.getBoolean("$packageName.${rule.name}", false) })
@@ -273,7 +286,11 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (icon != null) Image(icon, contentDescription = null, modifier = Modifier.size(64.dp))
+                AndroidView(
+                    factory = { context -> ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_INSIDE } },
+                    update = { view -> runCatching { if (appInfo != null) view.setImageDrawable(pm.getApplicationIcon(appInfo)) }.onFailure { view.setImageDrawable(null) } },
+                    modifier = Modifier.size(64.dp)
+                )
                 Spacer(Modifier.width(16.dp))
                 Column {
                     Text(appName, style = MaterialTheme.typography.titleLarge)
@@ -283,6 +300,20 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
             HorizontalDivider()
             LazyColumn(Modifier.fillMaxSize()) {
                 item {
+                    ListItem(
+                        headlineContent = { Text("تفعيل حماية هذا التطبيق") },
+                        supportingContent = { Text(if (protectionEnabled) "الحماية مفعّلة" else "الحماية غير مفعّلة") },
+                        trailingContent = {
+                            Switch(
+                                checked = protectionEnabled,
+                                onCheckedChange = { checked ->
+                                    protectionEnabled = checked
+                                    prefs.edit().putBoolean("$packageName.enabled", checked).apply()
+                                }
+                            )
+                        }
+                    )
+                    HorizontalDivider()
                     Text("ما الذي تريد حجبه عن هذا التطبيق؟", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
                 }
                 items(PrivacyRule.values().toList()) { rule ->
