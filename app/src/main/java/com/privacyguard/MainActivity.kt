@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -21,9 +22,16 @@ enum class ThemeChoice { AUTO, LIGHT, AMOLED }
 enum class AppFilter { ALL, USER, SYSTEM }
 
 @Composable
-fun PrivacyTheme(choice:ThemeChoice,content:@Composable()->Unit){
- val dark=when(choice){ThemeChoice.AUTO->isSystemInDarkTheme();ThemeChoice.LIGHT->false;ThemeChoice.AMOLED->true}
- val scheme=if(dark) darkColorScheme(background=if(choice==ThemeChoice.AMOLED) Color.Black else Color(0xFF121212),surface=if(choice==ThemeChoice.AMOLED) Color.Black else Color(0xFF121212)) else lightColorScheme()
+fun PrivacyTheme(choice: ThemeChoice, content: @Composable () -> Unit) {
+ val dark = when (choice) {
+  ThemeChoice.AUTO -> isSystemInDarkTheme()
+  ThemeChoice.LIGHT -> false
+  ThemeChoice.AMOLED -> true
+ }
+ val scheme = if (dark) darkColorScheme(
+  background = if (choice == ThemeChoice.AMOLED) Color.Black else Color(0xFF121212),
+  surface = if (choice == ThemeChoice.AMOLED) Color.Black else Color(0xFF121212)
+ ) else lightColorScheme()
  MaterialTheme(colorScheme=scheme,content=content)
 }
 
