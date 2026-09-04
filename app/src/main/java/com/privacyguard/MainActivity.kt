@@ -273,7 +273,7 @@ private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () 
         LazyColumn(Modifier.padding(padding).fillMaxSize()) {
             item {
                 ListItem(headlineContent = { Text("تفعيل حماية هذا التطبيق") }, supportingContent = { Text(if (protectionEnabled) "الحماية مفعّلة" else "الحماية غير مفعّلة") }, trailingContent = {
-                    Switch(protectionEnabled) {
+                    Switch(checked = protectionEnabled, onCheckedChange = {
                         protectionEnabled = it
                         prefs.edit().putBoolean("$packageName.enabled", it).apply()
                         (context as? MainActivity)?.notifyProtection(packageName, it)
