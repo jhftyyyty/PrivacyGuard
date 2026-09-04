@@ -1,19 +1,13 @@
-# PrivacyGuard
+# Privacy Guard
 
-Kotlin + Jetpack Compose Android project with a LibXposed API baseline.
-
-## Fixed build issue
-
-The Java compiler was targeting JVM 1.8 while Kotlin targeted JVM 17.
-This revision explicitly sets both Java `sourceCompatibility`/`targetCompatibility`
-and Kotlin `jvmTarget` to 17.
-
-The old unavailable `de.robv.android.xposed:api:82` dependency was also replaced
-with `io.github.libxposed:api:102.0.0`.
+Modern LibXposed/LSPosed privacy-filtering baseline for selected application scopes.
 
 ## Build
 
-GitHub Actions:
-`gradle :app:assembleDebug`
+GitHub Actions uses JDK 17 and Gradle 8.8. The Android Gradle Plugin is pinned to 8.5.2 and Kotlin to 2.0.21 to avoid the JVM/Gradle compatibility mismatch seen with newer runner defaults.
 
-The ZIP is already structured as repository root: there is no enclosing folder.
+## LSPosed
+
+Enable the module and select the target applications in LSPosed Manager. The module does not inject into Android/provider processes listed in `XposedEntry.kt`.
+
+The module uses the modern LibXposed API 102 metadata under `META-INF/xposed`.

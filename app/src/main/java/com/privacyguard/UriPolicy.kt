@@ -16,6 +16,8 @@ object UriPolicy {
         "com.android.providers.media.documents"
     )
 
-    fun isSensitive(uri: Uri?): Boolean =
-        uri?.authority?.lowercase() in sensitiveAuthorities
+    fun isSensitive(uri: Uri?): Boolean {
+        val authority = uri?.authority?.lowercase() ?: return false
+        return authority in sensitiveAuthorities
+    }
 }

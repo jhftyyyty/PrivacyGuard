@@ -37,5 +37,7 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.3.1")
     implementation("androidx.compose.ui:ui-tooling-preview:1.7.8")
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.8")
+
+    // Compile against the modern LibXposed API; the framework supplies it at runtime.
     compileOnly("io.github.libxposed:api:102.0.0")
 }
