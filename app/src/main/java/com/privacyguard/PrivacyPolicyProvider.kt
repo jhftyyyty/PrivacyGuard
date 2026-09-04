@@ -20,7 +20,7 @@ class PrivacyPolicyProvider : ContentProvider() {
         PrivacyRule.values().forEach { rule ->
             out.putBoolean(rule.name, prefs.getBoolean("$callingPackage.${rule.name}", false))
         }
-        out.putString("custom_path", prefs.getString("$callingPackage.custom_path", "") ?: "")
+        out.putStringArrayList("custom_paths", ArrayList(prefs.getStringSet("$callingPackage.custom_paths", emptySet()) ?: emptySet()))
         return out
     }
 

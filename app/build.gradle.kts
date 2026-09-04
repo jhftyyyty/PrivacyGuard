@@ -10,8 +10,8 @@ android {
         applicationId="com.privacyguard"
         minSdk=26
         targetSdk=35
-        versionCode=4
-        versionName="2.0"
+        versionCode=5
+        versionName="2.1"
     }
     compileOptions {
         sourceCompatibility=JavaVersion.VERSION_17
@@ -29,6 +29,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.compose.material:material-icons-core:1.7.8")
     implementation("androidx.core:core-splashscreen:1.0.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.8")
     compileOnly("io.github.libxposed:api:102.0.0")
 }

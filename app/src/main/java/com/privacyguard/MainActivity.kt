@@ -1,13 +1,17 @@
 package com.privacyguard
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.drawable.Drawable
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
+import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -22,21 +26,31 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import android.widget.ImageView
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+private const val PREFS = "privacy_policies"
+private const val UI_PREFS = "privacy_guard"
+private const val NOTIFICATION_CHANNEL = "privacy_guard"
 
 enum class ThemeChoice { AUTO, LIGHT, AMOLED }
 enum class PrivacyRule(val title: String) {
-    CONTACTS("جهات الاتصال"),
-    CALL_LOGS("سجل المكالمات"),
-    SMS("الرسائل SMS"),
-    MMS("رسائل MMS"),
-    MEDIA("الصور والفيديو والوسائط"),
-    FILES("الملفات والمجلدات")
+    CONTACTS("جهات الاتصال"), CALL_LOGS("سجل المكالمات"), SMS("الرسائل SMS"),
+    MMS("رسائل MMS"), MEDIA("الصور والفيديو والوسائط"), FILES("الملفات والمجلدات")
 }
+
+data class AppItem(
+    val info: ApplicationInfo,
+    val label: String,
+    val packageName: String,
+    val isSystem: Boolean,
+    val icon: Drawable?
+)
 
 @Composable
 fun PrivacyTheme(choice: ThemeChoice, content: @Composable () -> Unit) {
@@ -46,8 +60,8 @@ fun PrivacyTheme(choice: ThemeChoice, content: @Composable () -> Unit) {
         ThemeChoice.AMOLED -> true
     }
     val scheme = if (dark) darkColorScheme(
-        background = if (choice == ThemeChoice.AMOLED || choice == ThemeChoice.AUTO) Color.Black else Color(0xFF121212),
-        surface = if (choice == ThemeChoice.AMOLED || choice == ThemeChoice.AUTO) Color.Black else Color(0xFF121212)
+        background = androidx.compose.ui.graphics.Color.Black,
+        surface = androidx.compose.ui.graphics.Color.Black
     ) else lightColorScheme()
     MaterialTheme(colorScheme = scheme, content = content)
 }
@@ -56,23 +70,43 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        createNotificationChannel()
         setContent {
-            val prefs = remember { getSharedPreferences("privacy_guard", MODE_PRIVATE) }
+            val prefs = remember { getSharedPreferences(UI_PREFS, MODE_PRIVATE) }
             var theme by remember {
-                mutableStateOf(runCatching {
-                    ThemeChoice.valueOf(prefs.getString("theme", "AUTO") ?: "AUTO")
-                }.getOrDefault(ThemeChoice.AUTO))
+                mutableStateOf(runCatching { ThemeChoice.valueOf(prefs.getString("theme", "AUTO") ?: "AUTO") }.getOrDefault(ThemeChoice.AUTO))
             }
             PrivacyTheme(theme) {
-                PrivacyGuardScreen(
-                    theme = theme,
-                    onTheme = {
-                        theme = it
-                        prefs.edit().putString("theme", it.name).apply()
-                    }
-                )
+                PrivacyGuardScreen(theme) {
+                    theme = it
+                    prefs.edit().putString("theme", it.name).apply()
+                }
             }
         }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            getSystemService(NotificationManager::class.java).createNotificationChannel(
+                NotificationChannel(NOTIFICATION_CHANNEL, "Privacy Guard", NotificationManager.IMPORTANCE_DEFAULT)
+            )
+        }
+    }
+
+    fun notifyProtection(packageName: String, enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+            return
+        }
+        val text = if (enabled) "تم تفعيل حماية $packageName. تأكد أن التطبيق موجود في LSPosed Scope." else "تم إيقاف حماية $packageName."
+        val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
+            .setSmallIcon(com.privacyguard.R.drawable.ic_privacy_guard)
+            .setContentTitle("Privacy Guard")
+            .setContentText(text)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(packageName.hashCode(), notification)
     }
 }
 
@@ -81,104 +115,102 @@ class MainActivity : ComponentActivity() {
 fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val pm = context.packageManager
-    val apps = remember {
-        pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            .filter { it.packageName != context.packageName }
-            .sortedBy { pm.getApplicationLabel(it).toString().lowercase() }
-    }
-    val prefs = remember { context.getSharedPreferences("privacy_guard", Context.MODE_PRIVATE) }
-    var showSystemApps by remember {
-        mutableStateOf(prefs.getBoolean("show_system_apps", false))
-    }
+    val prefs = remember { context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE) }
+    var showSystemApps by remember { mutableStateOf(prefs.getBoolean("show_system_apps", false)) }
     var menu by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
     var selectedPackage by remember { mutableStateOf<String?>(null) }
     var globalSettings by remember { mutableStateOf(false) }
+    val enabledMap = remember { mutableStateMapOf<String, Boolean>() }
+
+    LaunchedEffect(Unit) {
+        // Keep the main list responsive: policy reads happen once, not during every row composition.
+        val policyPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        withContext(Dispatchers.IO) {
+            // getAll() is small and avoids a PackageManager/policy lookup on every scroll.
+            policyPrefs.all.keys.filter { it.endsWith(".enabled") }.forEach { key ->
+                val pkg = key.removeSuffix(".enabled")
+                enabledMap[pkg] = policyPrefs.getBoolean(key, false)
+            }
+        }
+    }
+
+    val apps by produceState<List<AppItem>>(initialValue = emptyList(), key1 = pm) {
+        value = withContext(Dispatchers.IO) {
+            pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                .filter { it.packageName != context.packageName }
+                .map { info ->
+                    AppItem(
+                        info = info,
+                        label = pm.getApplicationLabel(info).toString(),
+                        packageName = info.packageName,
+                        isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+                        icon = runCatching { pm.getApplicationIcon(info) }.getOrNull()
+                    )
+                }
+                .sortedBy { it.label.lowercase() }
+        }
+    }
 
     if (selectedPackage != null) {
         BackHandler { selectedPackage = null }
-        AppPolicyScreen(
-            packageName = selectedPackage!!,
-            pm = pm,
-            onBack = { selectedPackage = null }
-        )
+        AppPolicyScreen(selectedPackage!!, pm, onBack = { selectedPackage = null })
         return
     }
+    if (globalSettings) BackHandler { globalSettings = false }
 
-    if (globalSettings) {
-        BackHandler { globalSettings = false }
-    }
+    val query = search.trim().lowercase()
+    val shown = apps.asSequence()
+        .filter { showSystemApps || !it.isSystem }
+        .filter { query.isEmpty() || it.label.lowercase().contains(query) || it.packageName.lowercase().contains(query) }
+        .sortedWith(compareByDescending<AppItem> { enabledMap[it.packageName] == true }.thenBy { it.label.lowercase() })
+        .toList()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(if (globalSettings) "الإعدادات" else "التطبيقات") },
-                navigationIcon = {
-                    if (globalSettings) {
-                        IconButton(onClick = { globalSettings = false }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "رجوع")
-                        }
-                    }
-                },
-                actions = {
-                    if (!globalSettings) {
-                        IconButton(onClick = { menu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "المزيد")
-                        }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(
-                                text = { Text(if (showSystemApps) "إخفاء تطبيقات النظام" else "إظهار تطبيقات النظام") },
-                                onClick = {
-                                    showSystemApps = !showSystemApps
-                                    prefs.edit().putBoolean("show_system_apps", showSystemApps).apply()
-                                    menu = false
-                                }
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("إعدادات التطبيق") },
-                                onClick = { globalSettings = true; menu = false }
-                            )
-                        }
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text(if (globalSettings) "الإعدادات" else "التطبيقات") },
+            navigationIcon = {
+                if (globalSettings) IconButton(onClick = { globalSettings = false }) { Icon(Icons.Default.ArrowBack, "رجوع") }
+            },
+            actions = {
+                if (!globalSettings) {
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "المزيد") }
+                    DropdownMenu(menu, { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (showSystemApps) "إخفاء تطبيقات النظام" else "إظهار تطبيقات النظام") },
+                            onClick = {
+                                showSystemApps = !showSystemApps
+                                prefs.edit().putBoolean("show_system_apps", showSystemApps).apply()
+                                menu = false
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { globalSettings = true; menu = false })
                     }
                 }
-            )
-        }
-    ) { padding ->
+            }
+        )
+    }) { padding ->
         if (globalSettings) {
             GlobalSettings(theme, onTheme, Modifier.padding(padding))
         } else {
             Column(Modifier.padding(padding).fillMaxSize()) {
                 OutlinedTextField(
-                    value = search,
-                    onValueChange = { search = it },
+                    value = search, onValueChange = { search = it },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                    singleLine = true,
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "بحث") },
-                    placeholder = { Text("ابحث باسم التطبيق أو اسم الحزمة") },
-                    shape = RoundedCornerShape(14.dp)
+                    singleLine = true, leadingIcon = { Icon(Icons.Default.Search, "بحث") },
+                    placeholder = { Text("ابحث باسم التطبيق أو اسم الحزمة") }, shape = RoundedCornerShape(14.dp)
                 )
-
-                val query = search.trim().lowercase()
-                val shown = apps.filter { app ->
-                    val isSystem = app.flags and ApplicationInfo.FLAG_SYSTEM != 0
-                    val isUpdatedSystem = app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
-                    // Third-party/user apps are the default list. Updated system apps remain system apps here.
-                    val isThirdParty = !isSystem && !isUpdatedSystem
-                    val name = pm.getApplicationLabel(app).toString()
-                    (isThirdParty || showSystemApps) &&
-                        (query.isEmpty() || name.lowercase().contains(query) || app.packageName.lowercase().contains(query))
-                }
-
-                if (shown.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("لا توجد تطبيقات مطابقة للبحث")
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(shown, key = { it.packageName }) { app ->
-                            AppRow(app, pm) { selectedPackage = app.packageName }
-                        }
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(shown, key = { it.packageName }, contentType = { "app" }) { app ->
+                        AppRow(app, enabledMap[app.packageName] == true,
+                            onClick = { selectedPackage = app.packageName },
+                            onEnabledChange = { enabled ->
+                                enabledMap[app.packageName] = enabled
+                                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                                    .putBoolean("${app.packageName}.enabled", enabled).apply()
+                                (context as? MainActivity)?.notifyProtection(app.packageName, enabled)
+                            })
                     }
                 }
             }
@@ -187,49 +219,38 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
 }
 
 @Composable
-private fun AppRow(app: ApplicationInfo, pm: PackageManager, onClick: () -> Unit) {
+private fun AppRow(app: AppItem, enabled: Boolean, onClick: () -> Unit, onEnabledChange: (Boolean) -> Unit) {
     ListItem(
         modifier = Modifier.clickable(onClick = onClick),
         leadingContent = {
-            AndroidView(
-                factory = { context ->
-                    ImageView(context).apply {
-                        scaleType = ImageView.ScaleType.CENTER_INSIDE
-                    }
-                },
-                update = { view ->
-                    runCatching { view.setImageDrawable(pm.getApplicationIcon(app)) }
-                        .onFailure { view.setImageDrawable(null) }
-                },
-                modifier = Modifier.size(48.dp)
-            )
+            AndroidView(factory = { ctx -> ImageViewCompat.create(ctx) }, update = { view -> view.setImageDrawable(app.icon) }, modifier = Modifier.size(48.dp))
         },
-        headlineContent = { Text(pm.getApplicationLabel(app).toString()) },
-        supportingContent = { Text(app.packageName) },
+        headlineContent = { Text(app.label, maxLines = 1) },
+        supportingContent = { Text(app.packageName, maxLines = 1) },
         trailingContent = {
-            val system = app.flags and ApplicationInfo.FLAG_SYSTEM != 0
-            val updated = app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
-            if (system && !updated) {
-                AssistChip(onClick = {}, label = { Text("نظام") })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (app.isSystem) AssistChip(onClick = {}, label = { Text("نظام") })
+                Spacer(Modifier.width(8.dp))
+                Switch(checked = enabled, onCheckedChange = onEnabledChange)
             }
         }
     )
     HorizontalDivider()
 }
 
+private object ImageViewCompat {
+    fun create(context: Context): android.widget.ImageView = android.widget.ImageView(context).apply {
+        scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+    }
+}
+
 @Composable
 private fun GlobalSettings(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("المظهر", style = MaterialTheme.typography.titleLarge)
-        Text("الوضع الافتراضي: تلقائي")
-        listOf(
-            ThemeChoice.AUTO to "تلقائي",
-            ThemeChoice.LIGHT to "نهاري",
-            ThemeChoice.AMOLED to "AMOLED"
-        ).forEach { (value, label) ->
+        listOf(ThemeChoice.AUTO to "تلقائي", ThemeChoice.LIGHT to "نهاري", ThemeChoice.AMOLED to "AMOLED").forEach { (value, label) ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(label, Modifier.weight(1f))
-                RadioButton(selected = theme == value, onClick = { onTheme(value) })
+                Text(label, Modifier.weight(1f)); RadioButton(theme == value, onClick = { onTheme(value) })
             }
         }
     }
@@ -239,96 +260,61 @@ private fun GlobalSettings(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit, m
 @Composable
 private fun AppPolicyScreen(packageName: String, pm: PackageManager, onBack: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val prefs = remember { context.getSharedPreferences("privacy_policies", Context.MODE_PRIVATE) }
+    val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     val appInfo = remember(packageName) { runCatching { pm.getApplicationInfo(packageName, 0) }.getOrNull() }
     val appName = remember(packageName) { appInfo?.let { pm.getApplicationLabel(it).toString() } ?: packageName }
-    var protectionEnabled by remember(packageName) {
-        mutableStateOf(prefs.getBoolean("$packageName.enabled", false))
-    }
-    var rules by remember(packageName) {
-        mutableStateOf(PrivacyRule.values().associateWith { rule -> prefs.getBoolean("$packageName.${rule.name}", false) })
-    }
-    var customPath by remember(packageName) { mutableStateOf(prefs.getString("$packageName.custom_path", "") ?: "") }
+    var protectionEnabled by remember(packageName) { mutableStateOf(prefs.getBoolean("$packageName.enabled", false)) }
+    var rules by remember(packageName) { mutableStateOf(PrivacyRule.values().associateWith { prefs.getBoolean("$packageName.${it.name}", false) }) }
+    val storedPaths = remember(packageName) { prefs.getStringSet("$packageName.custom_paths", emptySet())?.toList() ?: emptyList() }
+    var paths by remember(packageName) { mutableStateOf(storedPaths) }
+    var newPath by remember { mutableStateOf("") }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("إعدادات الخصوصية") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "رجوع")
+    Scaffold(topBar = { TopAppBar(title = { Text("إعدادات الخصوصية") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "رجوع") } }) }) { padding ->
+        LazyColumn(Modifier.padding(padding).fillMaxSize()) {
+            item {
+                ListItem(headlineContent = { Text("تفعيل حماية هذا التطبيق") }, supportingContent = { Text(if (protectionEnabled) "الحماية مفعّلة" else "الحماية غير مفعّلة") }, trailingContent = {
+                    Switch(protectionEnabled) {
+                        protectionEnabled = it
+                        prefs.edit().putBoolean("$packageName.enabled", it).apply()
+                        (context as? MainActivity)?.notifyProtection(packageName, it)
                     }
-                }
-            )
-        }
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                AndroidView(
-                    factory = { context -> ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_INSIDE } },
-                    update = { view -> runCatching { if (appInfo != null) view.setImageDrawable(pm.getApplicationIcon(appInfo)) }.onFailure { view.setImageDrawable(null) } },
-                    modifier = Modifier.size(64.dp)
-                )
-                Spacer(Modifier.width(16.dp))
-                Column {
-                    Text(appName, style = MaterialTheme.typography.titleLarge)
-                    Text(packageName, style = MaterialTheme.typography.bodySmall)
-                }
+                })
+                HorizontalDivider()
+                Text("ما الذي تريد حجبه عن هذا التطبيق؟", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
             }
-            HorizontalDivider()
-            LazyColumn(Modifier.fillMaxSize()) {
-                item {
-                    ListItem(
-                        headlineContent = { Text("تفعيل حماية هذا التطبيق") },
-                        supportingContent = { Text(if (protectionEnabled) "الحماية مفعّلة" else "الحماية غير مفعّلة") },
-                        trailingContent = {
-                            Switch(
-                                checked = protectionEnabled,
-                                onCheckedChange = { checked ->
-                                    protectionEnabled = checked
-                                    prefs.edit().putBoolean("$packageName.enabled", checked).apply()
-                                }
-                            )
+            items(PrivacyRule.values().toList()) { rule ->
+                val checked = rules[rule] == true
+                ListItem(headlineContent = { Text(rule.title) }, supportingContent = { Text(if (checked) "محجوب" else "مسموح") }, trailingContent = {
+                    Switch(checked) {
+                        rules = rules.toMutableMap().apply { put(rule, it) }
+                        prefs.edit().putBoolean("$packageName.${rule.name}", it).apply()
+                    }
+                })
+            }
+            item {
+                Text("المجلدات المحجوبة", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                paths.forEach { path ->
+                    ListItem(headlineContent = { Text(path, maxLines = 2) }, trailingContent = {
+                        TextButton(onClick = {
+                            paths = paths.filterNot { it == path }
+                            prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply()
+                        }) { Text("حذف") }
+                    })
+                }
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(newPath, { newPath = it }, Modifier.weight(1f), singleLine = true, label = { Text("مسار المجلد") }, placeholder = { Text("/storage/emulated/0/DCIM") })
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = {
+                        val clean = newPath.trim().trimEnd('/')
+                        if (clean.isNotEmpty() && !paths.contains(clean)) {
+                            paths = paths + clean
+                            prefs.edit().putStringSet("$packageName.custom_paths", paths.toSet()).apply()
+                            newPath = ""
                         }
-                    )
-                    HorizontalDivider()
-                    Text("ما الذي تريد حجبه عن هذا التطبيق؟", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                    }) { Text("إضافة") }
                 }
-                items(PrivacyRule.values().toList()) { rule ->
-                    val enabled = rules[rule] == true
-                    ListItem(
-                        headlineContent = { Text(rule.title) },
-                        supportingContent = { Text(if (enabled) "محجوب" else "مسموح") },
-                        trailingContent = {
-                            Switch(
-                                checked = enabled,
-                                onCheckedChange = { checked ->
-                                    rules = rules.toMutableMap().apply { put(rule, checked) }
-                                    prefs.edit().putBoolean("$packageName.${rule.name}", checked).apply()
-                                }
-                            )
-                        }
-                    )
-                }
-                item {
-                    OutlinedTextField(
-                        value = customPath,
-                        onValueChange = {
-                            customPath = it
-                            prefs.edit().putString("$packageName.custom_path", it).apply()
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        singleLine = true,
-                        label = { Text("مجلد أو مسار مخصص") },
-                        placeholder = { Text("مثال: /storage/emulated/0/DCIM") }
-                    )
-                    Text(
-                        "يمكنك تحديد مسار إضافي تريد حمايته لهذا التطبيق.",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
-                    Spacer(Modifier.height(24.dp))
-                }
+                Text("يمكن إضافة أكثر من مجلد. فعّل «الملفات والمجلدات» حتى تطبق الحماية على المسارات المحددة.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
