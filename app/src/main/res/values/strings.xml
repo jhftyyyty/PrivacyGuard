@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Privacy Guard</string>
+    <string name="app_description">Per-app privacy filtering module for LSPosed</string>
+</resources>
