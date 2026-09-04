@@ -1,25 +1,19 @@
 # PrivacyGuard
 
-Kotlin + Jetpack Compose Android application with a modern LibXposed API 102 module entry point.
+Kotlin + Jetpack Compose Android project with a LibXposed API baseline.
 
-The previous build failed because `de.robv.android.xposed:api:82` was not available
-from the configured Maven repositories. This revision uses
-`io.github.libxposed:api:102.0.0`, which is published to Maven Central.
+## Fixed build issue
 
-The modern API uses `META-INF/xposed/java_init.list` rather than the legacy
-`assets/xposed_init`.
+The Java compiler was targeting JVM 1.8 while Kotlin targeted JVM 17.
+This revision explicitly sets both Java `sourceCompatibility`/`targetCompatibility`
+and Kotlin `jvmTarget` to 17.
+
+The old unavailable `de.robv.android.xposed:api:82` dependency was also replaced
+with `io.github.libxposed:api:102.0.0`.
 
 ## Build
 
+GitHub Actions:
 `gradle :app:assembleDebug`
 
-## GitHub Actions
-
-Push the repository to GitHub. The workflow builds the debug APK and uploads it
-as an artifact.
-
-## Note
-
-This is a baseline privacy module. It currently demonstrates a safe empty-cursor
-response for sensitive ContentResolver queries. Additional access paths can be
-added after confirming the build and LSPosed loading on the target device.
+The ZIP is already structured as repository root: there is no enclosing folder.
