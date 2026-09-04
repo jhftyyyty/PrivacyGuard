@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,7 +57,8 @@ data class PrivacyProfile(
     val id: String,
     val name: String,
     val rules: Set<PrivacyRule>,
-    val paths: List<String>
+    val paths: List<String>,
+    val assignedApps: Set<String> = emptySet()
 )
 
 private object ProfileStore {
@@ -66,7 +68,8 @@ private object ProfileStore {
     fun load(prefs: android.content.SharedPreferences, id: String): PrivacyProfile {
         val rules = PrivacyRule.values().filterTo(mutableSetOf()) { prefs.getBoolean("$id.${it.name}", false) }
         val paths = prefs.getStringSet("$id.paths", emptySet())?.toList() ?: emptyList()
-        return PrivacyProfile(id, prefs.getString("$id.name", id) ?: id, rules, paths)
+        val assignedApps = prefs.getStringSet("$id.apps", emptySet()) ?: emptySet()
+        return PrivacyProfile(id, prefs.getString("$id.name", id) ?: id, rules, paths, assignedApps)
     }
 
     fun save(prefs: android.content.SharedPreferences, profile: PrivacyProfile) {
@@ -74,13 +77,14 @@ private object ProfileStore {
             .putStringSet("ids", (prefs.getStringSet("ids", emptySet()) ?: emptySet()) + profile.id)
             .putString("${profile.id}.name", profile.name)
             .putStringSet("${profile.id}.paths", profile.paths.toSet())
+            .putStringSet("${profile.id}.apps", profile.assignedApps)
         PrivacyRule.values().forEach { e.putBoolean("${profile.id}.${it.name}", profile.rules.contains(it)) }
         e.apply()
     }
 
     fun delete(prefs: android.content.SharedPreferences, id: String) {
         val e = prefs.edit().putStringSet("ids", (prefs.getStringSet("ids", emptySet()) ?: emptySet()) - id)
-        e.remove("$id.name").remove("$id.paths")
+        e.remove("$id.name").remove("$id.paths").remove("$id.apps")
         PrivacyRule.values().forEach { e.remove("$id.${it.name}") }
         e.apply()
     }
@@ -181,7 +185,8 @@ fun PrivacyGuardScreen(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit) {
             apps = apps,
             enabledMap = enabledMap,
             policyPrefs = policyPrefs,
-            onBack = { selectedProfile = null; screen = Screen.PROFILES }
+            profilePrefs = profilePrefs,
+            onBack = { selectedProfile = null; screen = Screen.PROFILES; profileVersion++ }
         )
         return
     }
@@ -302,7 +307,7 @@ private fun AppRow(app: AppItem, enabled: Boolean, onClick: () -> Unit, onEnable
 private fun GlobalSettings(theme: ThemeChoice, onTheme: (ThemeChoice) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("المظهر", style = MaterialTheme.typography.titleLarge)
-        listOf(ThemeChoice.AUTO to "تلقائي (داكن = AMOLED)", ThemeChoice.LIGHT to "نهاري", ThemeChoice.AMOLED to "AMOLED").forEach { (value, label) ->
+        listOf(ThemeChoice.AUTO to "تلقائي", ThemeChoice.LIGHT to "نهاري", ThemeChoice.AMOLED to "AMOLED").forEach { (value, label) ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(label, Modifier.weight(1f))
                 RadioButton(selected = theme == value, onClick = { onTheme(value) })
@@ -343,10 +348,8 @@ private fun ProfilesScreen(
                     ListItem(
                         modifier = Modifier.clickable { onEdit(id) },
                         headlineContent = { Text(profile.name) },
-                        supportingContent = { Text("${profile.rules.size} سياسات • ${profile.paths.size} مجلدات") },
-                        trailingContent = {
-                            Button(onClick = { onApply(id) }) { Text("تطبيق") }
-                        }
+                        supportingContent = { Text("${profile.rules.size} سياسات • ${profile.paths.size} مجلدات • ${profile.assignedApps.size} تطبيقات") },
+                        trailingContent = { Button(onClick = { onApply(id) }) { Text("تطبيق") } }
                     )
                     HorizontalDivider()
                 }
@@ -382,22 +385,38 @@ private fun ProfileEditorScreen(
     prefs: android.content.SharedPreferences,
     onBack: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val initial = remember(profileId) { ProfileStore.load(prefs, profileId) }
     var name by remember(profileId) { mutableStateOf(initial.name) }
     var rules by remember(profileId) { mutableStateOf(initial.rules) }
     var paths by remember(profileId) { mutableStateOf(initial.paths) }
     var newPath by remember { mutableStateOf("") }
+    var showDelete by remember { mutableStateOf(false) }
 
     fun save() {
         val clean = name.trim().ifEmpty { initial.name }
-        ProfileStore.save(prefs, PrivacyProfile(profileId, clean, rules, paths))
+        val updated = initial.copy(name = clean, rules = rules, paths = paths)
+        ProfileStore.save(prefs, updated)
+        val policyPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val e = policyPrefs.edit()
+        updated.assignedApps.forEach { pkg ->
+            e.putBoolean("$pkg.enabled", true)
+            PrivacyRule.values().forEach { rule ->
+                e.putBoolean("$pkg.${rule.name}", rule in updated.rules)
+            }
+            e.putStringSet("$pkg.custom_paths", updated.paths.toSet())
+        }
+        e.apply()
         onBack()
     }
 
     Scaffold(topBar = {
         TopAppBar(
             title = { Text("تعديل البروفايل") },
-            navigationIcon = { IconButton(onClick = { save() }) { Icon(Icons.Default.ArrowBack, "حفظ ورجوع") } }
+            navigationIcon = { IconButton(onClick = { save() }) { Icon(Icons.Default.ArrowBack, "حفظ ورجوع") } },
+            actions = {
+                IconButton(onClick = { showDelete = true }) { Icon(Icons.Default.Delete, "حذف البروفايل") }
+            }
         )
     }) { padding ->
         LazyColumn(Modifier.padding(padding).fillMaxSize()) {
@@ -432,6 +451,18 @@ private fun ProfileEditorScreen(
             }
         }
     }
+
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text("حذف البروفايل؟") },
+            text = { Text("سيتم حذف إعدادات هذا البروفايل وربطه بالتطبيقات.") },
+            confirmButton = {
+                TextButton(onClick = { ProfileStore.delete(prefs, profileId); onBack() }) { Text("حذف") }
+            },
+            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("إلغاء") } }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -441,38 +472,56 @@ private fun ProfileAppPicker(
     apps: List<AppItem>,
     enabledMap: MutableMap<String, Boolean>,
     policyPrefs: android.content.SharedPreferences,
+    profilePrefs: android.content.SharedPreferences,
     onBack: () -> Unit
 ) {
-    val selected = remember { mutableStateListOf<String>() }
+    val selected = remember(profile.id) { mutableStateListOf<String>().also { it.addAll(profile.assignedApps) } }
     var search by remember { mutableStateOf("") }
     val query = search.trim().lowercase()
     val shown = apps.filter { query.isEmpty() || it.label.lowercase().contains(query) || it.packageName.lowercase().contains(query) }
+        .sortedWith(compareByDescending<AppItem> { it.packageName in selected }.thenBy { it.label.lowercase() })
+
+    fun toggle(pkg: String, value: Boolean) {
+        if (value) { if (pkg !in selected) selected.add(pkg) } else selected.remove(pkg)
+    }
 
     Scaffold(topBar = {
         TopAppBar(
-            title = { Text("تطبيق البروفايل على التطبيقات") },
+            title = { Text("تطبيق البروفايل") },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "رجوع") } },
-            actions = { TextButton(onClick = {
-                shown.forEach { if (it.packageName !in selected) selected.add(it.packageName) }
-            }) { Text("تحديد الظاهر") } }
+            actions = { Text("${selected.size}", modifier = Modifier.padding(horizontal = 12.dp)) }
         )
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth().padding(16.dp), singleLine = true, leadingIcon = { Icon(Icons.Default.Search, "بحث") }, placeholder = { Text("ابحث عن تطبيق") })
-            LazyColumn(Modifier.weight(1f)) {
+            Text("${selected.size} تطبيقات مفعّل عليها البروفايل", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), singleLine = true, leadingIcon = { Icon(Icons.Default.Search, "بحث") }, placeholder = { Text("ابحث باسم التطبيق أو اسم الحزمة") })
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { shown.forEach { toggle(it.packageName, true) } }) { Text("تحديد الظاهر") }
+                TextButton(onClick = { shown.forEach { toggle(it.packageName, false) } }) { Text("إلغاء الظاهر") }
+            }
+            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                 items(shown, key = { it.packageName }) { app ->
                     val checked = app.packageName in selected
                     ListItem(
-                        modifier = Modifier.clickable { if (checked) selected.remove(app.packageName) else selected.add(app.packageName) },
-                        leadingContent = { app.icon?.let { Image(it.asImageBitmap(), app.label, Modifier.size(40.dp)) } },
+                        modifier = Modifier.clickable { toggle(app.packageName, !checked) },
+                        leadingContent = { app.icon?.let { Image(it.asImageBitmap(), app.label, Modifier.size(48.dp)) } },
                         headlineContent = { Text(app.label, maxLines = 1) },
                         supportingContent = { Text(app.packageName, maxLines = 1) },
-                        trailingContent = { Checkbox(checked, onCheckedChange = { value -> if (value) selected.add(app.packageName) else selected.remove(app.packageName) }) }
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (app.isSystem) AssistChip(onClick = {}, label = { Text("نظام") })
+                                Spacer(Modifier.width(8.dp))
+                                Checkbox(checked = checked, onCheckedChange = { value -> toggle(app.packageName, value) })
+                            }
+                        }
                     )
+                    HorizontalDivider()
                 }
             }
             Button(
                 onClick = {
+                    val assigned = selected.toSet()
+                    val oldAssigned = profile.assignedApps
                     val e = policyPrefs.edit()
                     selected.distinct().forEach { pkg ->
                         e.putBoolean("$pkg.enabled", true)
@@ -480,12 +529,17 @@ private fun ProfileAppPicker(
                         e.putStringSet("$pkg.custom_paths", profile.paths.toSet())
                         enabledMap[pkg] = true
                     }
+                    (oldAssigned - assigned).forEach { pkg ->
+                        // Removing an app from the profile also disables its protection if this profile owned it.
+                        e.putBoolean("$pkg.enabled", false)
+                        enabledMap[pkg] = false
+                    }
                     e.apply()
+                    ProfileStore.save(profilePrefs, profile.copy(assignedApps = assigned))
                     onBack()
                 },
-                enabled = selected.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth().padding(16.dp)
-            ) { Text("تطبيق البروفايل على ${selected.size} تطبيق") }
+            ) { Text("حفظ وتطبيق على ${selected.size} تطبيق") }
         }
     }
 }
