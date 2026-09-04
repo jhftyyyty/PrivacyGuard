@@ -3,13 +3,14 @@ package com.privacyguard
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -28,10 +29,17 @@ fun PrivacyTheme(choice:ThemeChoice,content:@Composable()->Unit){
 
 class MainActivity:ComponentActivity(){
  override fun onCreate(savedInstanceState:Bundle?){
+  installSplashScreen()
   super.onCreate(savedInstanceState)
   setContent {
-   var theme by remember{mutableStateOf(ThemeChoice.AUTO)}
-   PrivacyTheme(theme){ PrivacyGuardScreen(theme){theme=it} }
+   val prefs = remember { getSharedPreferences("privacy_guard", MODE_PRIVATE) }
+   var theme by remember {
+    mutableStateOf(runCatching { ThemeChoice.valueOf(prefs.getString("theme", "AUTO") ?: "AUTO") }.getOrDefault(ThemeChoice.AUTO))
+   }
+   PrivacyTheme(theme){ PrivacyGuardScreen(theme){
+    theme=it
+    prefs.edit().putString("theme",it.name).apply()
+   } }
   }
  }
 }
@@ -42,7 +50,9 @@ fun PrivacyGuardScreen(theme:ThemeChoice,onTheme:(ThemeChoice)->Unit){
  val context=androidx.compose.ui.platform.LocalContext.current
  val pm=context.packageManager
  val apps=remember{pm.getInstalledApplications(PackageManager.GET_META_DATA).filter{it.packageName!=context.packageName}.sortedBy{pm.getApplicationLabel(it).toString().lowercase()}}
- var filter by remember{mutableStateOf(AppFilter.ALL)}
+ var filter by remember {
+  mutableStateOf(runCatching { AppFilter.valueOf(context.getSharedPreferences("privacy_guard", android.content.Context.MODE_PRIVATE).getString("filter", "ALL") ?: "ALL") }.getOrDefault(AppFilter.ALL))
+ }
  var menu by remember{mutableStateOf(false)}
  var settings by remember{mutableStateOf(false)}
  Scaffold(topBar={
@@ -51,11 +61,11 @@ fun PrivacyGuardScreen(theme:ThemeChoice,onTheme:(ThemeChoice)->Unit){
    navigationIcon={},
    actions={
     if(!settings){
-     IconButton(onClick={menu=true}){Icon(Icons.Default.MoreVert,contentDescription="القائمة")}
+     IconButton(onClick={menu=true}){Icon(Icons.Default.Menu,contentDescription="القائمة")}
      DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
-      DropdownMenuItem(text={Text("إظهار كل التطبيقات")},onClick={filter=AppFilter.ALL;menu=false})
-      DropdownMenuItem(text={Text("إظهار التطبيقات العادية فقط")},onClick={filter=AppFilter.USER;menu=false})
-      DropdownMenuItem(text={Text("إظهار تطبيقات النظام فقط")},onClick={filter=AppFilter.SYSTEM;menu=false})
+      DropdownMenuItem(text={Text("إظهار كل التطبيقات")},onClick={filter=AppFilter.ALL; context.getSharedPreferences("privacy_guard", android.content.Context.MODE_PRIVATE).edit().putString("filter", "ALL").apply(); menu=false})
+      DropdownMenuItem(text={Text("إظهار التطبيقات العادية فقط")},onClick={filter=AppFilter.USER; context.getSharedPreferences("privacy_guard", android.content.Context.MODE_PRIVATE).edit().putString("filter", "USER").apply(); menu=false})
+      DropdownMenuItem(text={Text("إظهار تطبيقات النظام فقط")},onClick={filter=AppFilter.SYSTEM; context.getSharedPreferences("privacy_guard", android.content.Context.MODE_PRIVATE).edit().putString("filter", "SYSTEM").apply(); menu=false})
      }
     }
     else IconButton(onClick={settings=false}){Text("رجوع")}

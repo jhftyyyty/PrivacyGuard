@@ -1,1 +1,8 @@
-<resources><style name="Theme.PrivacyGuard" parent="android:style/Theme.Material.Light.NoActionBar"/></resources>
+<resources>
+    <style name="Theme.PrivacyGuard" parent="android:style/Theme.Material.Light.NoActionBar"/>
+    <style name="Theme.PrivacyGuard.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_privacy_guard</item>
+        <item name="postSplashScreenTheme">@style/Theme.PrivacyGuard</item>
+    </style>
+</resources>
